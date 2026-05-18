@@ -1,7 +1,67 @@
-import React, { useState, useMemo } from 'react';
-import { TrendingUp, Users, UserPlus, Award, Info, AlertTriangle, CheckCircle2, Calendar, MousePointer2, Settings2, ChevronDown, ChevronUp, Plus, Minus, Calculator } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { 
+  TrendingUp, Users, UserPlus, Award, Info, AlertTriangle, 
+  CheckCircle2, Calendar, MousePointer2, Settings2, 
+  ChevronDown, ChevronUp, Plus, Minus, Calculator, Save, Trash2, FolderOpen 
+} from 'lucide-react';
+
+// --- Firebase の初期化と設定 ---
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
+
+let app, auth, db;
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+try {
+  const firebaseConfig = JSON.parse(__firebase_config);
+  app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  db = getFirestore(app);
+} catch (e) {
+  console.error("Firebase initialization failed:", e);
+}
+
+// 標準システムプリセット
+const DEFAULT_PRESETS = [
+  {
+    id: 'default-17th',
+    name: '17期標準プラン (初期設定)',
+    staffIncentiveRate: 50,
+    hrRateNormal: 2,
+    hrRateChallenge: 4,
+    friendAmountNormal: 5000,
+    friendAmountChallenge: 12500,
+    turnoverNormalT1: 12000,
+    turnoverNormalT2: 24000,
+    turnoverChallengeT1: 30000,
+    turnoverChallengeT2: 60000,
+    isSystem: true
+  },
+  {
+    id: 'referral-boost',
+    name: '紹介特化プラン (紹介率UP)',
+    staffIncentiveRate: 50,
+    hrRateNormal: 3,
+    hrRateChallenge: 6,
+    friendAmountNormal: 8000,
+    friendAmountChallenge: 15000,
+    turnoverNormalT1: 12000,
+    turnoverNormalT2: 24000,
+    turnoverChallengeT1: 30000,
+    turnoverChallengeT2: 60000,
+    isSystem: true
+  }
+];
 
 const App = () => {
+  // --- 認証 & データベース状態 ---
+  const [user, setUser] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [presets, setPresets] = useState([]);
+  const [newPresetName, setNewPresetName] = useState('');
+  const [isSavingPreset, setIsSavingPreset] = useState(false);
+
   // --- 成果目標の状態管理 ---
   const [staffCount, setStaffCount] = useState(100); 
   const [hrSalesYearly, setHrSalesYearly] = useState(12000000); 
@@ -26,6 +86,201 @@ const App = () => {
   const [turnoverNormalT2, setTurnoverNormalT2] = useState(24000);
   const [turnoverChallengeT1, setTurnoverChallengeT1] = useState(30000);
   const [turnoverChallengeT2, setTurnoverChallengeT2] = useState(60000);
+
+  // --- 1. 認証のセットアップ ---
+  useEffect(() => {
+    if (!auth) {
+      setIsLoading(false);
+      return;
+    }
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Auth failed:", e);
+        setIsLoading(false);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (!currentUser) setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- 2. 最後に選択されていた状態の自動復元 ---
+  useEffect(() => {
+    if (!user || !db) return;
+
+    const fetchActiveState = async () => {
+      try {
+        const activeDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'activeState', 'lastActive');
+        const docSnap = await getDoc(activeDocRef);
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.staffCount !== undefined) setStaffCount(Number(data.staffCount));
+          if (data.hrSalesYearly !== undefined) setHrSalesYearly(Number(data.hrSalesYearly));
+          if (data.friendReferralsYearly !== undefined) setFriendReferralsYearly(Number(data.friendReferralsYearly));
+          if (data.achievementsTier1 !== undefined) setAchievementsTier1(Number(data.achievementsTier1));
+          if (data.achievementsTier2 !== undefined) setAchievementsTier2(Number(data.achievementsTier2));
+          if (data.deemedOvertimeDeduction !== undefined) setDeemedOvertimeDeduction(Number(data.deemedOvertimeDeduction));
+          
+          if (data.staffIncentiveRate !== undefined) setStaffIncentiveRate(Number(data.staffIncentiveRate));
+          if (data.hrRateNormal !== undefined) setHrRateNormal(Number(data.hrRateNormal));
+          if (data.hrRateChallenge !== undefined) setHrRateChallenge(Number(data.hrRateChallenge));
+          if (data.friendAmountNormal !== undefined) setFriendAmountNormal(Number(data.friendAmountNormal));
+          if (data.friendAmountChallenge !== undefined) setFriendAmountChallenge(Number(data.friendAmountChallenge));
+          
+          if (data.turnoverNormalT1 !== undefined) setTurnoverNormalT1(Number(data.turnoverNormalT1));
+          if (data.turnoverNormalT2 !== undefined) setTurnoverNormalT2(Number(data.turnoverNormalT2));
+          if (data.turnoverChallengeT1 !== undefined) setTurnoverChallengeT1(Number(data.turnoverChallengeT1));
+          if (data.turnoverChallengeT2 !== undefined) setTurnoverChallengeT2(Number(data.turnoverChallengeT2));
+        }
+      } catch (err) {
+        console.error("Failed to restore active state:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchActiveState();
+  }, [user]);
+
+  // --- 3. 登録済みパターンのリアルタイム購読 ---
+  useEffect(() => {
+    if (!user || !db) return;
+
+    const presetsCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'presets');
+    const unsubscribe = onSnapshot(presetsCollection, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setPresets(list);
+    }, (error) => {
+      console.error("Firestore Error:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- 4. 自動セーブ処理 (入力変化のDebounceセーブ) ---
+  useEffect(() => {
+    if (!user || !db || isLoading) return;
+
+    const timer = setTimeout(async () => {
+      try {
+        const activeDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'activeState', 'lastActive');
+        await setDoc(activeDocRef, {
+          staffCount,
+          hrSalesYearly,
+          friendReferralsYearly,
+          achievementsTier1,
+          achievementsTier2,
+          deemedOvertimeDeduction,
+          staffIncentiveRate,
+          hrRateNormal,
+          hrRateChallenge,
+          friendAmountNormal,
+          friendAmountChallenge,
+          turnoverNormalT1,
+          turnoverNormalT2,
+          turnoverChallengeT1,
+          turnoverChallengeT2,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error("Auto save failed:", err);
+      }
+    }, 800); // 800msの操作待機後自動セーブ
+
+    return () => clearTimeout(timer);
+  }, [
+    user, staffCount, hrSalesYearly, friendReferralsYearly, achievementsTier1, achievementsTier2, deemedOvertimeDeduction,
+    staffIncentiveRate, hrRateNormal, hrRateChallenge, friendAmountNormal, friendAmountChallenge,
+    turnoverNormalT1, turnoverNormalT2, turnoverChallengeT1, turnoverChallengeT2, isLoading
+  ]);
+
+  // 全プリセットの統合 (デフォルト + ユーザー定義)
+  const allPresets = useMemo(() => {
+    return [...DEFAULT_PRESETS, ...presets];
+  }, [presets]);
+
+  // 現在の設定と完全一致するパターンを検出 (ロバストな比較に変更)
+  const activePresetId = useMemo(() => {
+    const match = allPresets.find(p => 
+      Number(p.staffIncentiveRate ?? 0) === Number(staffIncentiveRate ?? 0) &&
+      Number(p.hrRateNormal ?? 0) === Number(hrRateNormal ?? 0) &&
+      Number(p.hrRateChallenge ?? 0) === Number(hrRateChallenge ?? 0) &&
+      Number(p.friendAmountNormal ?? 0) === Number(friendAmountNormal ?? 0) &&
+      Number(p.friendAmountChallenge ?? 0) === Number(friendAmountChallenge ?? 0) &&
+      Number(p.turnoverNormalT1 ?? 0) === Number(turnoverNormalT1 ?? 0) &&
+      Number(p.turnoverNormalT2 ?? 0) === Number(turnoverNormalT2 ?? 0) &&
+      Number(p.turnoverChallengeT1 ?? 0) === Number(turnoverChallengeT1 ?? 0) &&
+      Number(p.turnoverChallengeT2 ?? 0) === Number(turnoverChallengeT2 ?? 0)
+    );
+    return match ? match.id : null;
+  }, [
+    allPresets, staffIncentiveRate, hrRateNormal, hrRateChallenge, 
+    friendAmountNormal, friendAmountChallenge, turnoverNormalT1, 
+    turnoverNormalT2, turnoverChallengeT1, turnoverChallengeT2
+  ]);
+
+  // パターンの新規保存
+  const handleSavePreset = async (e) => {
+    e.preventDefault();
+    if (!user || !db || !newPresetName.trim()) return;
+    setIsSavingPreset(true);
+    try {
+      const presetId = crypto.randomUUID();
+      const presetDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'presets', presetId);
+      await setDoc(presetDocRef, {
+        name: newPresetName.trim(),
+        staffIncentiveRate: Number(staffIncentiveRate),
+        hrRateNormal: Number(hrRateNormal),
+        hrRateChallenge: Number(hrRateChallenge),
+        friendAmountNormal: Number(friendAmountNormal),
+        friendAmountChallenge: Number(friendAmountChallenge),
+        turnoverNormalT1: Number(turnoverNormalT1),
+        turnoverNormalT2: Number(turnoverNormalT2),
+        turnoverChallengeT1: Number(turnoverChallengeT1),
+        turnoverChallengeT2: Number(turnoverChallengeT2),
+        createdAt: new Date().toISOString()
+      });
+      setNewPresetName('');
+    } catch (err) {
+      console.error("Failed to save preset:", err);
+    } finally {
+      setIsSavingPreset(false);
+    }
+  };
+
+  // パターンの適用 (数値キャストを強制)
+  const handleApplyPreset = (preset) => {
+    setStaffIncentiveRate(Number(preset.staffIncentiveRate ?? 50));
+    setHrRateNormal(Number(preset.hrRateNormal ?? 2));
+    setHrRateChallenge(Number(preset.hrRateChallenge ?? 4));
+    setFriendAmountNormal(Number(preset.friendAmountNormal ?? 5000));
+    setFriendAmountChallenge(Number(preset.friendAmountChallenge ?? 12500));
+    setTurnoverNormalT1(Number(preset.turnoverNormalT1 ?? 12000));
+    setTurnoverNormalT2(Number(preset.turnoverNormalT2 ?? 24000));
+    setTurnoverChallengeT1(Number(preset.turnoverChallengeT1 ?? 30000));
+    setTurnoverChallengeT2(Number(preset.turnoverChallengeT2 ?? 60000));
+  };
+
+  // パターンの削除
+  const handleDeletePreset = async (e, presetId) => {
+    e.stopPropagation(); // 適用処理の同時発火を防ぐ
+    if (!user || !db) return;
+    try {
+      const presetDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'presets', presetId);
+      await deleteDoc(presetDocRef);
+    } catch (err) {
+      console.error("Failed to delete preset:", err);
+    }
+  };
 
   // 達成回数のバリデーション（合計4回まで）
   const updateTier1 = (val) => {
@@ -118,98 +373,193 @@ const App = () => {
 
   const formatYen = (val) => new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY', maximumFractionDigits: 0 }).format(val);
 
+  // データベース読み込み中の待機画面
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="relative mb-6">
+          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-600"></div>
+          <Calculator className="absolute inset-0 m-auto w-6 h-6 text-blue-600 animate-pulse" />
+        </div>
+        <p className="text-xl font-black text-slate-700 animate-pulse tracking-widest">保存データを読み込み中...</p>
+        <p className="text-sm text-slate-400 mt-2">安全な同期処理を行っています。少々お待ちください。</p>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 p-6 md:p-12 font-sans text-slate-800">
       <div className="max-w-7xl mx-auto">
-        <header className="mb-10 text-center">
+        <header className="mb-10 text-center animate-in fade-in slide-in-from-top-4 duration-500">
           <div className="inline-flex items-center gap-2 bg-blue-100 text-blue-700 px-5 py-1.5 rounded-full text-sm font-bold mb-6">
-            <MousePointer2 className="w-4 h-4" />
+            <MousePointer2 className="w-4 h-4 animate-bounce" />
             17期 インセンティブ・シミュレーター
           </div>
           <h1 className="text-4xl md:text-5xl font-black text-slate-900 mb-4 tracking-tight">報酬プラン比較ツール</h1>
-          <p className="text-lg text-slate-500 italic">みなし残業代の控除額に基づいた詳細試算</p>
+          <p className="text-lg text-slate-500 italic">設定値を自動保存・いつでも複数パターンでシミュレーション</p>
         </header>
 
-        {/* 単価設定セクション */}
-        <div className="mb-10">
+        {/* パターン管理 ＆ 単価設定セクション */}
+        <div className="mb-10 space-y-4 animate-in fade-in duration-500 delay-100">
           <button 
             onClick={() => setShowSettings(!showSettings)}
-            className="w-full flex items-center justify-between bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:bg-slate-50 transition-colors"
+            className="w-full flex items-center justify-between bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:bg-slate-50 transition-all hover:shadow-md"
           >
             <div className="flex items-center gap-3 text-slate-700 font-bold text-lg">
               <Settings2 className="w-6 h-6 text-blue-600" />
-              インセンティブ単価の微調整
+              <span>単価パターンの保存・微調整</span>
+              {activePresetId && (
+                <span className="text-xs bg-emerald-100 text-emerald-800 font-extrabold px-3 py-1 rounded-full border border-emerald-200">
+                  選択中: {allPresets.find(p => p.id === activePresetId)?.name}
+                </span>
+              )}
             </div>
             {showSettings ? <ChevronUp className="w-6 h-6"/> : <ChevronDown className="w-6 h-6"/>}
           </button>
           
           {showSettings && (
-            <div className="bg-white border-x border-b border-slate-200 rounded-b-2xl p-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10 shadow-sm animate-in fade-in slide-in-from-top-2 duration-300">
-              <div className="space-y-5 border-r pr-6">
-                <label className="block text-sm font-bold text-slate-400 uppercase tracking-widest">基本設定</label>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-500">スタッフ1名:</span>
-                  <input type="number" value={staffIncentiveRate} onChange={(e) => setStaffIncentiveRate(Number(e.target.value))} className="w-24 p-2 border rounded-lg text-right text-base font-bold shadow-sm" />
+            <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-md space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
+              
+              {/* --- パターンの保存 ＆ ロードエリア --- */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 pb-8 border-b border-slate-100">
+                {/* 1. 現在の設定を保存するフォーム */}
+                <div className="space-y-4 bg-slate-50 p-6 rounded-2xl border border-slate-200/60">
+                  <h3 className="text-base font-black text-slate-700 flex items-center gap-2">
+                    <Save className="w-5 h-5 text-blue-600" />
+                    現在の単価設定を保存
+                  </h3>
+                  <form onSubmit={handleSavePreset} className="flex gap-3">
+                    <input 
+                      type="text" 
+                      placeholder="例：17期通常案、紹介2倍キャンペーンなど" 
+                      value={newPresetName}
+                      onChange={(e) => setNewPresetName(e.target.value)}
+                      className="flex-1 p-3 border border-slate-300 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none bg-white shadow-sm"
+                      required
+                    />
+                    <button 
+                      type="submit" 
+                      disabled={isSavingPreset}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-3 rounded-xl text-sm transition-all shadow-md active:scale-95 flex items-center gap-2 shrink-0 disabled:opacity-50"
+                    >
+                      <Save className="w-4 h-4" />
+                      保存する
+                    </button>
+                  </form>
+                  <p className="text-[11px] text-slate-400">※現在選択中のすべての「単価/歩合率」をクラウドに保存します（目標値は除く）</p>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-500">紹介料率(正):</span>
-                  <div className="flex items-center gap-1">
-                    <input type="number" value={hrRateNormal} onChange={(e) => setHrRateNormal(Number(e.target.value))} className="w-16 p-2 border rounded-lg text-right text-base font-bold shadow-sm" />
-                    <span className="text-sm font-bold">%</span>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-blue-600 font-bold">紹介料率(挑):</span>
-                  <div className="flex items-center gap-1">
-                    <input type="number" value={hrRateChallenge} onChange={(e) => setHrRateChallenge(Number(e.target.value))} className="w-16 p-2 border rounded-lg text-right text-base font-bold bg-blue-50 border-blue-100 shadow-sm" />
-                    <span className="text-sm font-bold text-blue-600">%</span>
+
+                {/* 2. 保存済みパターン一覧 (divラッパーによる干渉防止構造に変更) */}
+                <div className="space-y-4">
+                  <h3 className="text-base font-black text-slate-700 flex items-center gap-2">
+                    <FolderOpen className="w-5 h-5 text-blue-600" />
+                    登録済み単価パターン一覧
+                  </h3>
+                  <div className="flex flex-wrap gap-2.5 max-h-48 overflow-y-auto pr-2">
+                    {allPresets.map((preset) => {
+                      const isActive = activePresetId === preset.id;
+                      return (
+                        <div
+                          key={preset.id}
+                          onClick={() => handleApplyPreset(preset)}
+                          role="button"
+                          tabIndex={0}
+                          className={`group pl-4 pr-3 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all border shadow-sm cursor-pointer select-none ${
+                            isActive 
+                              ? 'bg-blue-600 border-blue-600 text-white font-black shadow-blue-100 shadow-md scale-105' 
+                              : 'bg-white border-slate-200 hover:border-slate-300 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          <span className="truncate max-w-[180px]">{preset.name}</span>
+                          {!preset.isSystem ? (
+                            <span 
+                              onClick={(e) => handleDeletePreset(e, preset.id)}
+                              className={`p-1 rounded-md transition-colors shrink-0 ${
+                                isActive ? 'hover:bg-blue-700 text-blue-200 hover:text-white' : 'hover:bg-red-50 text-slate-300 hover:text-red-600'
+                              }`}
+                              title="パターンを削除"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </span>
+                          ) : (
+                            <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded font-normal group-hover:bg-slate-200 shrink-0">System</span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
 
-              <div className="space-y-5 border-r pr-6">
-                <label className="block text-sm font-bold text-slate-400 uppercase tracking-widest">友人紹介(1件)</label>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-500">安定型:</span>
-                  <input type="number" value={friendAmountNormal} onChange={(e) => setFriendAmountNormal(Number(e.target.value))} className="w-28 p-2 border rounded-lg text-right text-base font-bold shadow-sm" />
+              {/* --- 単価微調整エリア --- */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
+                <div className="space-y-5 border-r pr-6">
+                  <label className="block text-sm font-bold text-slate-400 uppercase tracking-widest">基本設定</label>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-500">スタッフ1名:</span>
+                    <input type="number" value={staffIncentiveRate} onChange={(e) => setStaffIncentiveRate(Number(e.target.value))} className="w-24 p-2 border rounded-lg text-right text-base font-bold shadow-sm" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-500">紹介料率(正):</span>
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={hrRateNormal} onChange={(e) => setHrRateNormal(Number(e.target.value))} className="w-16 p-2 border rounded-lg text-right text-base font-bold shadow-sm" />
+                      <span className="text-sm font-bold">%</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-blue-600 font-bold">紹介料率(挑):</span>
+                    <div className="flex items-center gap-1">
+                      <input type="number" value={hrRateChallenge} onChange={(e) => setHrRateChallenge(Number(e.target.value))} className="w-16 p-2 border rounded-lg text-right text-base font-bold bg-blue-50 border-blue-100 shadow-sm" />
+                      <span className="text-sm font-bold text-blue-600">%</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-blue-600 font-bold">チャレンジ:</span>
-                  <input type="number" value={friendAmountChallenge} onChange={(e) => setFriendAmountChallenge(Number(e.target.value))} className="w-28 p-2 border rounded-lg text-right text-base font-bold bg-blue-50 border-blue-100 shadow-sm" />
-                </div>
-              </div>
 
-              <div className="space-y-4 lg:col-span-2 grid grid-cols-2 gap-8">
-                 <div className="space-y-4">
-                    <label className="block text-sm font-bold text-slate-400 uppercase tracking-tighter">退職率改善 (1回)</label>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-500 font-medium">安定 T1:</span>
-                      <input type="number" value={turnoverNormalT1} onChange={(e) => setTurnoverNormalT1(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm shadow-sm" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-blue-600 font-bold">挑戦 T1:</span>
-                      <input type="number" value={turnoverChallengeT1} onChange={(e) => setTurnoverChallengeT1(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm bg-blue-50 border-blue-100 font-bold text-blue-600 shadow-sm" />
-                    </div>
-                 </div>
-                 <div className="space-y-4 pt-8">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-500 font-medium">安定 T2:</span>
-                      <input type="number" value={turnoverNormalT2} onChange={(e) => setTurnoverNormalT2(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm shadow-sm" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-blue-600 font-bold">挑戦 T2:</span>
-                      <input type="number" value={turnoverChallengeT2} onChange={(e) => setTurnoverChallengeT2(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm bg-blue-50 border-blue-100 font-bold text-blue-600 shadow-sm" />
-                    </div>
-                 </div>
+                <div className="space-y-5 border-r pr-6">
+                  <label className="block text-sm font-bold text-slate-400 uppercase tracking-widest">友人紹介(1件)</label>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-500">安定型:</span>
+                    <input type="number" value={friendAmountNormal} onChange={(e) => setFriendAmountNormal(Number(e.target.value))} className="w-28 p-2 border rounded-lg text-right text-base font-bold shadow-sm" />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-blue-600 font-bold">チャレンジ:</span>
+                    <input type="number" value={friendAmountChallenge} onChange={(e) => setFriendAmountChallenge(Number(e.target.value))} className="w-28 p-2 border rounded-lg text-right text-base font-bold bg-blue-50 border-blue-100 shadow-sm" />
+                  </div>
+                </div>
+
+                <div className="space-y-4 lg:col-span-2 grid grid-cols-2 gap-8">
+                   <div className="space-y-4">
+                      <label className="block text-sm font-bold text-slate-400 uppercase tracking-tighter">退職率改善 (1回)</label>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-500 font-medium">安定 T1:</span>
+                        <input type="number" value={turnoverNormalT1} onChange={(e) => setTurnoverNormalT1(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm shadow-sm" />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-blue-600 font-bold">挑戦 T1:</span>
+                        <input type="number" value={turnoverChallengeT1} onChange={(e) => setTurnoverChallengeT1(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm bg-blue-50 border-blue-100 font-bold text-blue-600 shadow-sm" />
+                      </div>
+                   </div>
+                   <div className="space-y-4 pt-8">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-500 font-medium">安定 T2:</span>
+                        <input type="number" value={turnoverNormalT2} onChange={(e) => setTurnoverNormalT2(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm shadow-sm" />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-blue-600 font-bold">挑戦 T2:</span>
+                        <input type="number" value={turnoverChallengeT2} onChange={(e) => setTurnoverChallengeT2(Number(e.target.value))} className="w-20 p-2 border rounded-lg text-right text-sm bg-blue-50 border-blue-100 font-bold text-blue-600 shadow-sm" />
+                      </div>
+                   </div>
+                </div>
               </div>
             </div>
           )}
         </div>
 
+        {/* メインの計算部 */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
           
           {/* 左カラム: 入力エリア */}
-          <div className="lg:col-span-5 space-y-8">
+          <div className="lg:col-span-5 space-y-8 animate-in fade-in duration-500 delay-200">
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
               <h2 className="text-2xl font-bold flex items-center gap-3 mb-8 border-b pb-4 text-slate-800">
                 <TrendingUp className="w-7 h-7 text-blue-600" />
@@ -331,7 +681,7 @@ const App = () => {
           </div>
 
           {/* 右カラム: 比較結果 */}
-          <div className="lg:col-span-7 space-y-8">
+          <div className="lg:col-span-7 space-y-8 animate-in fade-in duration-500 delay-300">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* 安定型カード */}
               <div className="bg-white p-8 rounded-[2rem] shadow-sm border-l-8 border-l-slate-300 border border-slate-200 relative group transition-all hover:shadow-xl">
@@ -354,7 +704,7 @@ const App = () => {
                 </div>
                 <div className="space-y-2.5">
                   {calculations.monthly.normal.breakdown.map((item, i) => (
-                    <div key={i} className={`flex justify-between text-xs font-bold ${item.value === 0 ? 'text-slate-200' : 'text-slate-600'}`}>
+                    <div key={i} className={`flex justify-between text-xs font-bold ${item.value === 0 ? 'text-slate-200' : 'text-slate-500'}`}>
                       <span>{item.label}</span>
                       <span className="tabular-nums">{formatYen(item.value)}</span>
                     </div>
@@ -383,7 +733,7 @@ const App = () => {
                 </div>
                 <div className="space-y-2.5">
                   {calculations.monthly.challenge.breakdown.map((item, i) => (
-                    <div key={i} className={`flex justify-between text-xs font-bold ${item.value < 0 ? 'text-red-500' : 'text-slate-700'}`}>
+                    <div key={i} className={`flex justify-between text-xs font-bold ${item.value < 0 ? 'text-red-500 font-bold' : 'text-slate-700'}`}>
                       <span>{item.label}</span>
                       <span className="tabular-nums font-black">{formatYen(item.value)}</span>
                     </div>
